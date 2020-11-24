@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Excel表格处理</title>
+    <style>
+        .log {
+            width: 1000px;
+            height: 600px;
+            background-color: rgb(220, 220, 220);
+            overflow-y: auto;
+            display: block;
+            text-align: left;
+            color: black;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="app">
+        <input type="file" name="" :disabled="disabled" id="choose_file" title="选择excel文件" />
+        <button id="re_choose" :disabled="disabled">重选文件</button>
+        <button id="re_down" :disabled="disabled">重新下载</button>
+        <button id="begin_process" :disabled="disabled">确定转换</button>
+        <br />
+        <br />
+        <div>日志: <button id="clear_log">清除日志</button> </div>
+        <div class="log">
+            <p v-for="log in logs" :key="log">
+                {{ log }}
+            </p>
+        </div>
+    </div>
+</body>
+
+</html>
+<script src="https://cdn.bootcss.com/jquery/3.4.1/jquery.js"></script>
+<script src="https://cdn.bootcss.com/xlsx/0.12.6/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/vue"></script>
+<script>
+    var sheetData = null
+    var file = null;
+    var app = null;
+    var sheet_datas = null
+    var sheetName = null;
+    var wb = null
+    $(function () {
+        app = new Vue({
+            el: '#app',
+            data: {
+                logs: [],
+                disabled: false
+            }
+        })
+        $('#clear_log').click(function () {
+            app.logs = []
+        })
+        $('#re_choose').click(function () {
+            $("#choose_file").val('');
+        })
+        $("#re_down").click(function () {
+            excelDownload();
+        })
+
+        $('#begin_process').click(function () {
+            app.disabled = 'disabled'
+            try {
+                if (sheetData.length > 0) {
+                    appendVal(`开始处理数据!`);
+                    beginProcess(sheetData);
+                }
+                else {
+                    appendVal(`数据为空，无法处理`)
+                }
+            }
+            catch (e) {
+                appendVal(`${JSON.stringify(e)}`)
+            }
+            finally {
+                app.disabled = false
+            }
+        })
+
+        $("#choose_file").change(function () {
+            try {
+                appendVal(`正在加载文件，请稍后再点击[确认转换]按钮....`);
+                if (!this.files) { return; }
+                app.disabled = 'disabled'
+                file = this.files[0];
+                var reader = new FileReader();
+                reader.readAsBinaryString(file);
+                reader.onload = function (e) {
+                    var data = e.target.result;
+                    sheetData = data;
+                    appendVal(`文件加载成功。可以点击[确定转换]按钮啦！`)
+                }
+            } catch (e) {
+                appendVal(`${JSON.stringify(e)}`)
+            }
+            finally {
+                app.disabled = false;
+            }
+        })
+    })
+
+    function appendVal(str) {
+        app.logs.push(str);
+    }
+
+    function excelDownload() {
+        if (!sheet_datas) {
+            appendVal('当前数据为空，不支持下载！')
+            return;
+        }
+        var wopts = {
+            bookType: 'xlsx',
+            bookSST: false,
+            type: 'binary'
+        };
+        var new_wb = {
+            SheetNames: wb.SheetNames,
+            Sheets: {},
+            Props: {}
+        }
+        new_wb.Sheets[sheetName] = XLSX.utils.json_to_sheet(sheet_datas);
+        var fName = file.name.replace('.xlsx', '').replace('.xls', '');
+        saveAs(new Blob([changeData(XLSX.write(new_wb, wopts))], { type: 'application/octet-stream' }), fName)
+    }
+
+    function beginProcess(data) {
+        wb = XLSX.read(data, { type: 'binary' });
+        sheetName = wb.SheetNames[0];
+        sheet_datas = XLSX.utils.sheet_to_json(wb.Sheets[sheetName]);
+        var s_length = sheet_datas.length;
+        if (s_length > 0) {
+            for (let i = 0; i < s_length; i++) {
+                const ele = sheet_datas[i];
+                var count = 0;
+                for (var key in ele) {
+                    var url = ele[key];
+                    if (url.indexOf('http') !== -1) {
+                        $.ajax({
+                            url: url,
+                            dataType: 'html',
+                            async: false,
+                            success: function (res) {
+                                var html = $(res)
+                                var price_tags = html.find('#price_tag');
+                                var price = '未知';
+                                if (price_tags.length == 0) {
+                                    var goods_prices = html.find('.goods_price');
+                                    if (goods_prices.length > 0) {
+                                        if ($(goods_prices[0]).text().indexOf('下架') !== -1) {
+                                            price = '下架'
+                                        }
+                                    }
+                                }
+                                else {
+                                    price = Number($(price_tags[0]).text()).toString();
+                                }
+                                var new_col = 'new_' + key;
+                                if (key.startsWith("__EMPTY_")) {
+                                    new_col = "__EMPTY_" + 5;
+                                }
+                                ele[new_col] = price;
+                                appendVal(`（${i + 1}/${s_length}）第${i + 1}行数据处理完成！`);
+                            }
+                        })
+                        break;
+                    }
+                }
+            }
+            excelDownload();
+        }
+        else {
+            appendVal(`该表格为空，无需处理`)
+        }
+    }
+
+    function changeData(s) {
+        //如果存在ArrayBuffer对象(es6) 最好采用该对象
+        if (typeof ArrayBuffer !== 'undefined') {
+
+            //1、创建一个字节长度为s.length的内存区域
+            var buf = new ArrayBuffer(s.length);
+
+            //2、创建一个指向buf的Unit8视图，开始于字节0，直到缓冲区的末尾
+            var view = new Uint8Array(buf);
+
+            //3、返回指定位置的字符的Unicode编码
+            for (var i = 0; i != s.length; ++i) view[i] = s.charCodeAt(i) & 0xFF;
+            return buf;
+
+        } else {
+            var buf = new Array(s.length);
+            for (var i = 0; i != s.length; ++i) buf[i] = s.charCodeAt(i) & 0xFF;
+            return buf;
+        }
+    }
+
+    function saveAs(obj, fileName) {//当然可以自定义简单的下载文件实现方式
+        appendVal(`处理完成。正在下载文件....`)
+        var tmpa = document.createElement("a");
+        tmpa.download = fileName ? fileName + '.xlsx' : new Date().getTime() + '.xlsx';
+        tmpa.href = URL.createObjectURL(obj); //绑定a标签
+        tmpa.click(); //模拟点击实现下载
+        setTimeout(function () { //延时释放
+            URL.revokeObjectURL(obj); //用URL.revokeObjectURL()来释放这个object URL
+            tmpa.remove();
+        }, 1000);
+    }
+</script>
